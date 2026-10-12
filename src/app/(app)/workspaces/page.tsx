@@ -78,7 +78,7 @@ export default function WorkspacesPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl p-8">
+    <div className="w-full p-8">
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">Workspaces</h1>
         {hasWorkspaces && !formOpen ? (

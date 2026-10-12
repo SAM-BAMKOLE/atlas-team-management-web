@@ -171,6 +171,15 @@ export interface CreateColumnInput {
   position: number;
 }
 
+export interface UpdateBoardInput {
+  name: string;
+}
+
+export interface UpdateColumnInput {
+  name?: string;
+  position?: number;
+}
+
 // ---------- Tasks ----------
 
 export type TaskPriority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
@@ -203,6 +212,12 @@ export interface Task {
   updatedAt: string;
   assignees: TaskAssignee[];
   labels: TaskLabelAssignment[];
+}
+
+/** A task from the project-scoped list, which adds its board and column names. */
+export interface ProjectTask extends Task {
+  board: { id: string; name: string };
+  column: { id: string; name: string };
 }
 
 /** The "basic record" returned by move (no assignees or labels). */

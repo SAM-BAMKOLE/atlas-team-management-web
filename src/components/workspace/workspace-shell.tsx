@@ -44,7 +44,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
 
   if (status === "error") {
     return (
-      <div className="mx-auto w-full max-w-3xl p-8">
+      <div className="w-full p-8">
         <Card>
           <CardHeader>
             <CardTitle>Could not load workspace</CardTitle>
@@ -66,7 +66,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
   const staleForUrl = detail !== null && detail.id !== workspaceId;
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-8 p-8">
+    <div className="w-full space-y-8 p-8">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           {active ? (

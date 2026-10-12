@@ -10,5 +10,6 @@ export default async function BoardPage({
   params: Promise<{ projectId: string; boardId: string }>;
 }) {
   const { projectId, boardId } = await params;
-  return <BoardPanel projectId={projectId} boardId={boardId} />;
+  // Keyed by board so archived-view state can't leak across board switches.
+  return <BoardPanel key={boardId} projectId={projectId} boardId={boardId} />;
 }

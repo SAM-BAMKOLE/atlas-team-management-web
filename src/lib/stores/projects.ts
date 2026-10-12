@@ -7,6 +7,8 @@ import type {
   CreateColumnInput,
   CreateProjectInput,
   Project,
+  UpdateBoardInput,
+  UpdateColumnInput,
 } from "@/lib/api/types";
 import { projectsApi } from "@/lib/api/projects";
 
@@ -35,6 +37,31 @@ interface ProjectsState {
     boardId: string,
     input: CreateColumnInput,
   ) => Promise<Column>;
+  updateBoard: (
+    workspaceId: string,
+    projectId: string,
+    boardId: string,
+    input: UpdateBoardInput,
+  ) => Promise<Board>;
+  deleteBoard: (
+    workspaceId: string,
+    projectId: string,
+    boardId: string,
+  ) => Promise<void>;
+  updateColumn: (
+    workspaceId: string,
+    projectId: string,
+    boardId: string,
+    columnId: string,
+    input: UpdateColumnInput,
+  ) => Promise<Column>;
+  deleteColumn: (
+    workspaceId: string,
+    projectId: string,
+    boardId: string,
+    columnId: string,
+    force?: boolean,
+  ) => Promise<void>;
 }
 
 let listFlight: { id: string; promise: Promise<void> } | null = null;
@@ -47,6 +74,49 @@ function patchListProject(
   fn: (project: Project) => Project,
 ): Project[] {
   return projects.map((p) => (p.id === projectId ? fn(p) : p));
+}
+
+/** Patch one board (columns preserved) in the open project detail. */
+function patchActiveBoard(
+  active: Project | null,
+  projectId: string,
+  boardId: string,
+  fn: (board: Board) => Board,
+): Project | null {
+  if (!active || active.id !== projectId) return active;
+  return {
+    ...active,
+    boards: active.boards.map((b) => (b.id === boardId ? fn(b) : b)),
+  };
+}
+
+/**
+ * Mirror the backend's column mutation locally. A rename replaces the record
+ * in place; a reorder re-inserts it at its new index and renumbers the board
+ * so positions stay contiguous (the backend does the same in a transaction).
+ */
+function mergeColumn(
+  columns: Column[],
+  updated: Column,
+  reordered: boolean,
+): Column[] {
+  const sorted = [...columns].sort((a, b) => a.position - b.position);
+  if (!reordered) {
+    return sorted.map((c) => (c.id === updated.id ? { ...c, ...updated } : c));
+  }
+  const others = sorted.filter((c) => c.id !== updated.id);
+  const target = Math.min(Math.max(updated.position, 0), others.length);
+  return [...others.slice(0, target), updated, ...others.slice(target)].map(
+    (c, index) => ({ ...c, position: index }),
+  );
+}
+
+/** Drop a column and renumber the survivors, matching the backend. */
+function removeColumn(columns: Column[], columnId: string): Column[] {
+  return [...columns]
+    .sort((a, b) => a.position - b.position)
+    .filter((c) => c.id !== columnId)
+    .map((c, index) => ({ ...c, position: index }));
 }
 
 /**
@@ -152,5 +222,74 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
           : active,
     });
     return column;
+  },
+
+  updateBoard: async (workspaceId, projectId, boardId, input) => {
+    const board = await projectsApi.updateBoard(
+      workspaceId,
+      projectId,
+      boardId,
+      input,
+    );
+    set({
+      projects: patchListProject(get().projects, projectId, (p) => ({
+        ...p,
+        boards: p.boards.map((b) => (b.id === boardId ? { ...b, ...board } : b)),
+      })),
+      active: patchActiveBoard(get().active, projectId, boardId, (b) => ({
+        ...b,
+        ...board,
+      })),
+    });
+    return board;
+  },
+
+  deleteBoard: async (workspaceId, projectId, boardId) => {
+    await projectsApi.deleteBoard(workspaceId, projectId, boardId);
+    const active = get().active;
+    set({
+      projects: patchListProject(get().projects, projectId, (p) => ({
+        ...p,
+        boards: p.boards.filter((b) => b.id !== boardId),
+      })),
+      active:
+        active?.id === projectId
+          ? { ...active, boards: active.boards.filter((b) => b.id !== boardId) }
+          : active,
+    });
+  },
+
+  updateColumn: async (workspaceId, projectId, boardId, columnId, input) => {
+    const column = await projectsApi.updateColumn(
+      workspaceId,
+      projectId,
+      boardId,
+      columnId,
+      input,
+    );
+    const reordered = input.position !== undefined;
+    set({
+      active: patchActiveBoard(get().active, projectId, boardId, (b) => ({
+        ...b,
+        columns: mergeColumn(b.columns ?? [], column, reordered),
+      })),
+    });
+    return column;
+  },
+
+  deleteColumn: async (workspaceId, projectId, boardId, columnId, force) => {
+    await projectsApi.deleteColumn(
+      workspaceId,
+      projectId,
+      boardId,
+      columnId,
+      force,
+    );
+    set({
+      active: patchActiveBoard(get().active, projectId, boardId, (b) => ({
+        ...b,
+        columns: removeColumn(b.columns ?? [], columnId),
+      })),
+    });
   },
 }));

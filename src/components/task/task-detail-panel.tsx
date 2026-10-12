@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Archive, Loader2, Pencil, Plus, X } from "lucide-react";
+import { ArrowLeft, Archive, Loader2, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -24,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { errorMessage } from "@/lib/api/errors";
+import { ApiError, errorMessage } from "@/lib/api/errors";
 import type {
   Comment,
   Label,
@@ -34,6 +35,7 @@ import type {
 } from "@/lib/api/types";
 import { labelsApi } from "@/lib/api/labels";
 import { tasksApi } from "@/lib/api/tasks";
+import { useAuthStore } from "@/lib/stores/auth";
 import { useBoardStore } from "@/lib/stores/board";
 import { useWorkspaceStore } from "@/lib/stores/workspace";
 import { PRIORITY_DOT, PRIORITY_LABEL } from "./priority";
@@ -82,9 +84,10 @@ function isOverdue(dueDate: string): boolean {
 
 /**
  * Full task view: inline editing of title, description, priority, and due
- * date; assignment from workspace members; archiving; and a comment thread.
- * The task itself comes from the board store (there is no single-task GET —
- * the board list is fetched and the task picked by id).
+ * date; assignment from workspace members; archiving with restore and
+ * permanent delete for archived tasks; and a comment thread. The task comes
+ * from the board store; when it isn't there (e.g. a deep link to an archived
+ * task) it is fetched by id instead.
  */
 export function TaskDetailPanel({
   projectId,
@@ -100,12 +103,25 @@ export function TaskDetailPanel({
   const members = useWorkspaceStore(
     (s) => s.detail?.memberships ?? NO_MEMBERS,
   );
-  const task = useBoardStore(
+  const user = useAuthStore((s) => s.user);
+  const storeTask = useBoardStore(
     (s) => s.tasks.find((t) => t.id === taskId) ?? null,
   );
   const boardStatus = useBoardStore((s) => s.status);
   const boardError = useBoardStore((s) => s.error);
   const loadTasks = useBoardStore((s) => s.load);
+
+  // A deep link may point at an archived task, which the active board list
+  // never contains — fall back to the single-task endpoint for those. The ref
+  // guards against re-fetching; result and error land in state via promise
+  // callbacks (never synchronously inside the effect).
+  const [directTask, setDirectTask] = useState<Task | null>(null);
+  const [directError, setDirectError] = useState<ApiError | null>(null);
+  const directRequested = useRef(false);
+
+  const task = storeTask ?? directTask;
+  const myRole = members.find((m) => m.userId === user?.id)?.role;
+  const canManage = myRole === "OWNER" || myRole === "ADMIN";
 
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
@@ -117,6 +133,7 @@ export function TaskDetailPanel({
 
   const [assigning, setAssigning] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [confirmingPurge, setConfirmingPurge] = useState(false);
 
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentsStatus, setCommentsStatus] = useState<
@@ -142,6 +159,22 @@ export function TaskDetailPanel({
     if (!workspaceId) return;
     void loadTasks(workspaceId, projectId, boardId);
   }, [workspaceId, projectId, boardId, loadTasks]);
+
+  useEffect(() => {
+    if (!workspaceId || storeTask || directRequested.current) return;
+    directRequested.current = true;
+    tasksApi
+      .get(workspaceId, projectId, boardId, taskId)
+      .then(setDirectTask)
+      .catch((error: unknown) =>
+        setDirectError(
+          error instanceof ApiError
+            ? error
+            : new ApiError(0, [errorMessage(error)]),
+        ),
+      );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, storeTask?.id, taskId]);
 
   useEffect(() => {
     if (!workspaceId || !task) return;
@@ -198,15 +231,43 @@ export function TaskDetailPanel({
     setArchiving(true);
     setFormError(null);
     try {
-      await tasksApi.update(workspaceId, projectId, boardId, taskId, {
-        archived: true,
-      });
+      await tasksApi.remove(workspaceId, projectId, boardId, taskId);
       useBoardStore.setState((state) => ({
         tasks: state.tasks.filter((t) => t.id !== taskId),
       }));
       router.push(
         `/workspaces/${workspaceId}/projects/${projectId}/boards/${boardId}`,
       );
+    } catch (error) {
+      setFormError(errorMessage(error));
+      setArchiving(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    if (!workspaceId || !task) return;
+    setArchiving(true);
+    setFormError(null);
+    try {
+      await useBoardStore
+        .getState()
+        .restore(workspaceId, projectId, boardId, taskId);
+      router.push(boardHref);
+    } catch (error) {
+      setFormError(errorMessage(error));
+      setArchiving(false);
+    }
+  };
+
+  const handlePurge = async () => {
+    if (!workspaceId || !task) return;
+    setArchiving(true);
+    setFormError(null);
+    try {
+      await useBoardStore
+        .getState()
+        .purge(workspaceId, projectId, boardId, taskId);
+      router.push(boardHref);
     } catch (error) {
       setFormError(errorMessage(error));
       setArchiving(false);
@@ -342,7 +403,13 @@ export function TaskDetailPanel({
 
   const boardHref = `/workspaces/${workspaceId}/projects/${projectId}/boards/${boardId}`;
 
-  if (!workspaceId || (!task && (boardStatus === "loading" || boardStatus === "idle"))) {
+  if (
+    !workspaceId ||
+    (!task &&
+      (boardStatus === "loading" ||
+        boardStatus === "idle" ||
+        (storeTask === null && directError === null)))
+  ) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-6 w-48" />
@@ -352,24 +419,18 @@ export function TaskDetailPanel({
     );
   }
 
-  if (!task && boardStatus === "error") {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Could not load task</CardTitle>
-          <CardDescription>{boardError ?? "Something went wrong."}</CardDescription>
-        </CardHeader>
-      </Card>
-    );
-  }
-
   if (!task) {
+    const notFound = directError?.isNotFound ?? false;
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Task not found</CardTitle>
+          <CardTitle>{notFound ? "Task not found" : "Could not load task"}</CardTitle>
           <CardDescription>
-            It may have been archived, or the link is out of date.
+            {directError
+              ? notFound
+                ? "It may have been archived, or the link is out of date."
+                : errorMessage(directError)
+              : boardError ?? "Something went wrong."}
           </CardDescription>
           <CardAction>
             <Button asChild variant="outline" size="sm">
@@ -398,6 +459,57 @@ export function TaskDetailPanel({
           <ArrowLeft /> Back to board
         </Link>
       </Button>
+      {task.archived ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm" data-slot="archived-banner">
+          <span className="flex-1">
+            This task is archived and hidden from the board.
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={archiving}
+            onClick={() => void handleRestore()}
+          >
+            {archiving ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <RotateCcw />
+            )}
+            Restore
+          </Button>
+          {canManage ? (
+            confirmingPurge ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={archiving}
+                  onClick={() => void handlePurge()}
+                >
+                  Delete forever
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={archiving}
+                  onClick={() => setConfirmingPurge(false)}
+                >
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-destructive"
+                onClick={() => setConfirmingPurge(true)}
+              >
+                <Trash2 /> Delete permanently
+              </Button>
+            )
+          ) : null}
+        </div>
+      ) : null}
       {formError ? (
         <p className="text-sm text-destructive" role="alert">
           {formError}
@@ -473,11 +585,13 @@ export function TaskDetailPanel({
               ) : (
                 <>
                   <CardTitle className="text-lg">{task.title}</CardTitle>
-                  <CardAction>
-                    <Button variant="outline" size="sm" onClick={startEditing}>
-                      <Pencil /> Edit
-                    </Button>
-                  </CardAction>
+                  {!task.archived ? (
+                    <CardAction>
+                      <Button variant="outline" size="sm" onClick={startEditing}>
+                        <Pencil /> Edit
+                      </Button>
+                    </CardAction>
+                  ) : null}
                 </>
               )}
             </CardHeader>
@@ -697,23 +811,31 @@ export function TaskDetailPanel({
             <CardHeader>
               <CardTitle>Task status</CardTitle>
               <CardDescription>
-                Archived tasks disappear from the board.
+                {task.archived
+                  ? "Archived tasks are hidden from the board until restored."
+                  : "Archived tasks disappear from the board."}
               </CardDescription>
               <CardAction>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={archiving}
-                  onClick={() => void handleArchive()}
-                >
-                  {archiving ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <>
-                      <Archive /> Archive
-                    </>
-                  )}
-                </Button>
+                {task.archived ? (
+                  <Badge variant="secondary">
+                    <Archive /> Archived
+                  </Badge>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={archiving}
+                    onClick={() => void handleArchive()}
+                  >
+                    {archiving ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <>
+                        <Archive /> Archive
+                      </>
+                    )}
+                  </Button>
+                )}
               </CardAction>
             </CardHeader>
           </Card>

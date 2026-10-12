@@ -29,7 +29,7 @@ export default function WorkspaceLayout({
 /** Mirrors the shell's loading chrome (header skeletons + content blocks). */
 function WorkspaceShellFallback() {
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-8 p-8">
+    <div className="w-full space-y-8 p-8">
       <div className="mt-1 space-y-2">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-4 w-40" />

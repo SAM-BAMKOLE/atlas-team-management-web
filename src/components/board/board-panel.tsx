@@ -2,20 +2,31 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  Archive,
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  ListTodo,
   Loader2,
   Plus,
+  RotateCcw,
+  Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api/errors";
 import type { Column, Task } from "@/lib/api/types";
+import { useAuthStore } from "@/lib/stores/auth";
 import { useBoardStore } from "@/lib/stores/board";
 import { useProjectsStore } from "@/lib/stores/projects";
 import { useWorkspaceStore } from "@/lib/stores/workspace";
@@ -135,6 +146,8 @@ export function BoardPanel({
   boardId: string;
 }) {
   const workspaceId = useWorkspaceStore((s) => s.detail?.id ?? null);
+  const detail = useWorkspaceStore((s) => s.detail);
+  const user = useAuthStore((s) => s.user);
   const active = useProjectsStore((s) => s.active);
   const projectStatus = useProjectsStore((s) => s.activeStatus);
   const projectError = useProjectsStore((s) => s.activeError);
@@ -143,12 +156,22 @@ export function BoardPanel({
   const tasksStatus = useBoardStore((s) => s.status);
   const tasksError = useBoardStore((s) => s.error);
   const loadTasks = useBoardStore((s) => s.load);
+  const archived = useBoardStore((s) => s.archived);
+  const archivedStatus = useBoardStore((s) => s.archivedStatus);
+  const archivedError = useBoardStore((s) => s.archivedError);
+  const loadArchived = useBoardStore((s) => s.loadArchived);
 
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [purgeConfirmId, setPurgeConfirmId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const myRole = detail?.memberships.find((m) => m.userId === user?.id)?.role;
+  const canManage = myRole === "OWNER" || myRole === "ADMIN";
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -201,6 +224,43 @@ export function BoardPanel({
         .finally(() => setMovingId(null));
     },
     [workspaceId, active, projectId, boardId],
+  );
+
+  const handleRestore = useCallback(
+    async (task: Task) => {
+      if (!workspaceId) return;
+      setBusyId(task.id);
+      setFormError(null);
+      try {
+        await useBoardStore
+          .getState()
+          .restore(workspaceId, projectId, boardId, task.id);
+      } catch (error) {
+        setFormError(errorMessage(error));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [workspaceId, projectId, boardId],
+  );
+
+  const handlePurge = useCallback(
+    async (task: Task) => {
+      if (!workspaceId) return;
+      setBusyId(task.id);
+      setFormError(null);
+      try {
+        await useBoardStore
+          .getState()
+          .purge(workspaceId, projectId, boardId, task.id);
+        setPurgeConfirmId(null);
+      } catch (error) {
+        setFormError(errorMessage(error));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [workspaceId, projectId, boardId],
   );
 
   const loading =
@@ -265,6 +325,31 @@ export function BoardPanel({
           <span className="text-muted-foreground">/</span>
           <h2 className="truncate text-lg font-semibold">{board.name}</h2>
         </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button asChild variant="ghost" size="sm">
+            <Link
+              href={`/workspaces/${workspaceId}/projects/${projectId}/tasks`}
+            >
+              <ListTodo /> All tasks
+            </Link>
+          </Button>
+          <Button
+            variant={showArchived ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => {
+              const next = !showArchived;
+              setShowArchived(next);
+              if (next && workspaceId) {
+                void loadArchived(workspaceId, projectId, boardId);
+              }
+            }}
+          >
+            <Archive /> Archived
+            {archivedStatus === "ready" && archived.length > 0 ? (
+              <Badge variant="secondary">{archived.length}</Badge>
+            ) : null}
+          </Button>
+        </div>
       </div>
       {formError ? (
         <p className="text-sm text-destructive" role="alert">
@@ -279,6 +364,106 @@ export function BoardPanel({
               {tasksError ?? "Something went wrong."}
             </p>
           </CardHeader>
+        </Card>
+      ) : showArchived ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Archived tasks</CardTitle>
+            <CardDescription>
+              Restore a task to bring it back to the board, or delete it
+              permanently (owners and admins).
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {archivedStatus === "loading" ? (
+              <div className="space-y-2">
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
+              </div>
+            ) : archivedStatus === "error" ? (
+              <p className="text-sm text-destructive" role="alert">
+                {archivedError ?? "Could not load archived tasks."}
+              </p>
+            ) : archived.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No archived tasks yet.
+              </p>
+            ) : (
+              <ul className="divide-y">
+                {archived.map((task) => {
+                  const columnName = columns.find(
+                    (c) => c.id === task.columnId,
+                  )?.name;
+                  return (
+                    <li
+                      key={task.id}
+                      className="flex flex-wrap items-center gap-3 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <Link
+                          href={`/workspaces/${workspaceId}/projects/${projectId}/boards/${boardId}/tasks/${task.id}`}
+                          className="text-sm hover:underline"
+                        >
+                          {task.title}
+                        </Link>
+                        <p className="text-xs text-muted-foreground">
+                          {columnName ?? "Unknown column"}
+                          {task.dueDate
+                            ? ` · Due ${dueLabel(task.dueDate)}`
+                            : ""}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busyId === task.id}
+                        onClick={() => void handleRestore(task)}
+                      >
+                        {busyId === task.id ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <RotateCcw />
+                        )}
+                        Restore
+                      </Button>
+                      {canManage ? (
+                        purgeConfirmId === task.id ? (
+                          <span className="flex items-center gap-1.5">
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              disabled={busyId === task.id}
+                              onClick={() => void handlePurge(task)}
+                            >
+                              Delete forever
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busyId === task.id}
+                              onClick={() => setPurgeConfirmId(null)}
+                            >
+                              Cancel
+                            </Button>
+                          </span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            onClick={() => setPurgeConfirmId(task.id)}
+                          >
+                            <Trash2 /> Delete
+                          </Button>
+                        )
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardContent>
         </Card>
       ) : columns.length === 0 ? (
         <Card>
