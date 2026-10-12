@@ -6,6 +6,15 @@ const nextConfig: NextConfig = {
   // ("client rendering requested outside a Suspense boundary") because the
   // shell's useParams can't resolve unknown ids at build time. The app uses
   // none of the cacheComponents APIs, so it runs without it.
+  images: {
+    // The public landing page pulls its team photo from Unsplash.
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "images.unsplash.com",
+      },
+    ],
+  },
 };
 
 export default nextConfig;
