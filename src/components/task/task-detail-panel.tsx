@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Archive, Loader2, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
@@ -123,6 +123,25 @@ export function TaskDetailPanel({
   const myRole = members.find((m) => m.userId === user?.id)?.role;
   const canManage = myRole === "OWNER" || myRole === "ADMIN";
 
+  /**
+   * Apply a local mutation to the task record wherever it is currently shown.
+   * The board store keeps kanban tiles in sync; the direct-fetch copy is
+   * patched too, because on a deep link (or an archived task) the record on
+   * screen comes from `directTask`, so assign/label/save changes would not
+   * visibly update until a reload otherwise.
+   */
+  const mergeTaskPatch = useCallback(
+    (fn: (t: Task) => Task) => {
+      useBoardStore.setState((state) => ({
+        tasks: state.tasks.map((t) => (t.id === taskId ? fn(t) : t)),
+      }));
+      setDirectTask((current) =>
+        current && current.id === taskId ? fn(current) : current,
+      );
+    },
+    [taskId],
+  );
+
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -215,9 +234,7 @@ export function TaskDetailPanel({
           ? new Date(`${dueDate}T00:00:00.000Z`).toISOString()
           : null,
       });
-      useBoardStore.setState((state) => ({
-        tasks: state.tasks.map((t) => (t.id === taskId ? updated : t)),
-      }));
+      mergeTaskPatch(() => updated);
       setEditing(false);
     } catch (error) {
       setFormError(errorMessage(error));
@@ -282,23 +299,17 @@ export function TaskDetailPanel({
     setFormError(null);
     try {
       await tasksApi.assign(workspaceId, projectId, boardId, taskId, userId);
-      useBoardStore.setState((state) => ({
-        tasks: state.tasks.map((t) =>
-          t.id === taskId
-            ? {
-                ...t,
-                assignees: [
-                  ...t.assignees,
-                  {
-                    taskId,
-                    userId,
-                    assignedAt: new Date().toISOString(),
-                    user: member.user,
-                  },
-                ],
-              }
-            : t,
-        ),
+      mergeTaskPatch((t) => ({
+        ...t,
+        assignees: [
+          ...t.assignees,
+          {
+            taskId,
+            userId,
+            assignedAt: new Date().toISOString(),
+            user: member.user,
+          },
+        ],
       }));
     } catch (error) {
       setFormError(errorMessage(error));
@@ -312,12 +323,9 @@ export function TaskDetailPanel({
     setFormError(null);
     try {
       await tasksApi.unassign(workspaceId, projectId, boardId, taskId, userId);
-      useBoardStore.setState((state) => ({
-        tasks: state.tasks.map((t) =>
-          t.id === taskId
-            ? { ...t, assignees: t.assignees.filter((a) => a.userId !== userId) }
-            : t,
-        ),
+      mergeTaskPatch((t) => ({
+        ...t,
+        assignees: t.assignees.filter((a) => a.userId !== userId),
       }));
     } catch (error) {
       setFormError(errorMessage(error));
@@ -332,23 +340,17 @@ export function TaskDetailPanel({
     setFormError(null);
     try {
       await tasksApi.addLabel(workspaceId, projectId, boardId, taskId, labelId);
-      useBoardStore.setState((state) => ({
-        tasks: state.tasks.map((t) =>
-          t.id === taskId
-            ? {
-                ...t,
-                labels: [
-                  ...t.labels,
-                  {
-                    taskId,
-                    labelId,
-                    assignedAt: new Date().toISOString(),
-                    label,
-                  },
-                ],
-              }
-            : t,
-        ),
+      mergeTaskPatch((t) => ({
+        ...t,
+        labels: [
+          ...t.labels,
+          {
+            taskId,
+            labelId,
+            assignedAt: new Date().toISOString(),
+            label,
+          },
+        ],
       }));
     } catch (error) {
       setFormError(errorMessage(error));
@@ -368,12 +370,9 @@ export function TaskDetailPanel({
         taskId,
         labelId,
       );
-      useBoardStore.setState((state) => ({
-        tasks: state.tasks.map((t) =>
-          t.id === taskId
-            ? { ...t, labels: t.labels.filter((l) => l.labelId !== labelId) }
-            : t,
-        ),
+      mergeTaskPatch((t) => ({
+        ...t,
+        labels: t.labels.filter((l) => l.labelId !== labelId),
       }));
     } catch (error) {
       setFormError(errorMessage(error));

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Archive,
   ArrowLeft,
@@ -11,8 +11,10 @@ import {
   Plus,
   RotateCcw,
   Trash2,
+  UserPlus,
 } from "lucide-react";
 import Link from "next/link";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,8 +26,9 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AssigneeMenu, initials } from "@/components/task/assignee-menu";
 import { errorMessage } from "@/lib/api/errors";
-import type { Column, Task } from "@/lib/api/types";
+import type { Column, MembershipWithUser, Task } from "@/lib/api/types";
 import { useAuthStore } from "@/lib/stores/auth";
 import { useBoardStore } from "@/lib/stores/board";
 import { useProjectsStore } from "@/lib/stores/projects";
@@ -46,9 +49,9 @@ function isOverdue(dueDate: string): boolean {
 /**
  * Kanban board: one lane per column (columns come from the project detail),
  * task cards ordered by position, inline task creation, and left/right move
- * controls that shift a card into the adjacent lane at the top. Priority,
- * labels, and due dates render read-only here — editing lives on the task
- * detail page.
+ * controls that shift a card into the adjacent lane at the top. The meta row
+ * has a quick-assign menu; full editing (description, due date, labels) lives
+ * on the task detail page.
  */
 function TaskCard({
   task,
@@ -56,12 +59,22 @@ function TaskCard({
   detailHref,
   onMove,
   moving,
+  workspaceId,
+  projectId,
+  boardId,
+  members,
+  onAssignChange,
 }: {
   task: Task;
   columnIds: string[];
   detailHref: string;
   onMove: (task: Task, dir: -1 | 1) => void;
   moving: boolean;
+  workspaceId: string | null;
+  projectId: string;
+  boardId: string;
+  members: MembershipWithUser[];
+  onAssignChange: (task: Task, userId: string, assigned: boolean) => void;
 }) {
   const laneIndex = columnIds.indexOf(task.columnId);
   const labels = task.labels.map((assignment) => assignment.label);
@@ -104,36 +117,64 @@ function TaskCard({
           </Button>
         </div>
       </div>
-      {labels.length > 0 || task.dueDate || task.assignees.length > 0 ? (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-4">
-          {labels.map((label) => (
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-4">
+        {labels.map((label) => (
+          <span
+            key={label.id}
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+          >
             <span
-              key={label.id}
-              className="flex items-center gap-1 text-xs text-muted-foreground"
-            >
-              <span
-                className="size-2 rounded-full"
-                style={{ backgroundColor: label.color }}
-              />
-              {label.name}
-            </span>
-          ))}
-          {task.dueDate ? (
-            <span
-              className={`text-xs ${isOverdue(task.dueDate) ? "text-destructive" : "text-muted-foreground"}`}
-            >
-              {dueLabel(task.dueDate)}
-            </span>
-          ) : null}
-          {task.assignees.length > 0 ? (
-            <span className="text-xs text-muted-foreground">
-              {task.assignees.length === 1
-                ? "1 assignee"
-                : `${task.assignees.length} assignees`}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+              className="size-2 rounded-full"
+              style={{ backgroundColor: label.color }}
+            />
+            {label.name}
+          </span>
+        ))}
+        {task.dueDate ? (
+          <span
+            className={`text-xs ${isOverdue(task.dueDate) ? "text-destructive" : "text-muted-foreground"}`}
+          >
+            {dueLabel(task.dueDate)}
+          </span>
+        ) : null}
+        {workspaceId ? (
+          <AssigneeMenu
+            workspaceId={workspaceId}
+            projectId={projectId}
+            boardId={boardId}
+            taskId={task.id}
+            assignees={task.assignees}
+            members={members}
+            onChange={(userId, assigned) =>
+              onAssignChange(task, userId, assigned)
+            }
+            trigger={
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                aria-label={`Assign ${task.title} to team members`}
+              >
+                {task.assignees.length === 0 ? (
+                  <>
+                    <UserPlus className="size-3" /> Assign
+                  </>
+                ) : (
+                  <>
+                    <Avatar size="sm" className="size-4">
+                      <AvatarFallback className="text-[9px]">
+                        {initials(task.assignees[0].user.name)}
+                      </AvatarFallback>
+                    </Avatar>
+                    {task.assignees.length > 1
+                      ? `+${task.assignees.length - 1}`
+                      : null}
+                  </>
+                )}
+              </button>
+            }
+          />
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -172,12 +213,42 @@ export function BoardPanel({
 
   const myRole = detail?.memberships.find((m) => m.userId === user?.id)?.role;
   const canManage = myRole === "OWNER" || myRole === "ADMIN";
+  const members = useMemo(() => detail?.memberships ?? [], [detail]);
 
   useEffect(() => {
     if (!workspaceId) return;
     void loadActive(workspaceId, projectId);
     void loadTasks(workspaceId, projectId, boardId);
   }, [workspaceId, projectId, boardId, loadActive, loadTasks]);
+
+  /** Keep the kanban tiles in sync after a quick assign/unassign. */
+  const handleAssigneeChange = useCallback(
+    (task: Task, userId: string, assigned: boolean) => {
+      const member = members.find((m) => m.userId === userId);
+      if (!member) return;
+      useBoardStore.setState((state) => ({
+        tasks: state.tasks.map((t) =>
+          t.id === task.id
+            ? {
+                ...t,
+                assignees: assigned
+                  ? [
+                      ...t.assignees,
+                      {
+                        taskId: task.id,
+                        userId,
+                        assignedAt: new Date().toISOString(),
+                        user: member.user,
+                      },
+                    ]
+                  : t.assignees.filter((a) => a.userId !== userId),
+              }
+            : t,
+        ),
+      }));
+    },
+    [members],
+  );
 
   const handleCreate = useCallback(
     async (column: Column) => {
@@ -502,6 +573,11 @@ export function BoardPanel({
                       detailHref={`/workspaces/${workspaceId}/projects/${projectId}/boards/${boardId}/tasks/${task.id}`}
                       onMove={handleMove}
                       moving={movingId === task.id}
+                      workspaceId={workspaceId}
+                      projectId={projectId}
+                      boardId={boardId}
+                      members={members}
+                      onAssignChange={handleAssigneeChange}
                     />
                   ))}
                 </div>

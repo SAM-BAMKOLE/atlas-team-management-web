@@ -9,7 +9,9 @@ import {
   Loader2,
   RotateCcw,
   Trash2,
+  UserPlus,
 } from "lucide-react";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +21,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AssigneeMenu, initials } from "@/components/task/assignee-menu";
 import { errorMessage } from "@/lib/api/errors";
 import type { ProjectTask } from "@/lib/api/types";
 import { tasksApi } from "@/lib/api/tasks";
@@ -87,9 +90,44 @@ export function ProjectTasksPanel({ projectId }: { projectId: string }) {
 
   const myRole = detail?.memberships.find((m) => m.userId === user?.id)?.role;
   const canManage = myRole === "OWNER" || myRole === "ADMIN";
+  const members = detail?.memberships ?? [];
 
   const project = active?.id === projectId ? active : null;
   const boards = project?.boards ?? [];
+
+  /** Keep local rows and any loaded board store in sync after a quick assign. */
+  const handleAssigneeChange = (
+    taskId: string,
+    userId: string,
+    assigned: boolean,
+  ) => {
+    const member = members.find((m) => m.userId === userId);
+    if (!member) return;
+    const nextAssignees = (
+      current: ProjectTask["assignees"],
+    ): ProjectTask["assignees"] =>
+      assigned && !current.some((a) => a.userId === userId)
+        ? [
+            ...current,
+            {
+              taskId,
+              userId,
+              assignedAt: new Date().toISOString(),
+              user: member.user,
+            },
+          ]
+        : current.filter((a) => a.userId !== userId);
+    const patch = (t: ProjectTask): ProjectTask =>
+      t.id === taskId
+        ? { ...t, assignees: nextAssignees(t.assignees) }
+        : t;
+    setActiveTasks((prev) => (prev ? prev.map(patch) : prev));
+    setArchivedTasks((prev) => (prev ? prev.map(patch) : prev));
+    useBoardStore.getState().patchTask(taskId, (t) => ({
+      ...t,
+      assignees: nextAssignees(t.assignees),
+    }));
+  };
 
   const handleRestore = async (task: ProjectTask) => {
     if (!workspaceId) return;
@@ -271,17 +309,44 @@ export function ProjectTasksPanel({ projectId }: { projectId: string }) {
                                 · Due {dueLabel(task.dueDate)}
                               </span>
                             ) : null}
-                            {task.assignees.length > 0 ? (
-                              <span>
-                                {" "}
-                                ·{" "}
-                                {task.assignees.length === 1
-                                  ? "1 assignee"
-                                  : `${task.assignees.length} assignees`}
-                              </span>
-                            ) : null}
                           </p>
                         </div>
+                        <AssigneeMenu
+                          workspaceId={workspaceId}
+                          projectId={projectId}
+                          boardId={task.boardId}
+                          taskId={task.id}
+                          assignees={task.assignees}
+                          members={members}
+                          onChange={(userId, assigned) =>
+                            handleAssigneeChange(task.id, userId, assigned)
+                          }
+                          align="end"
+                          trigger={
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                              aria-label={`Assign ${task.title} to team members`}
+                            >
+                              {task.assignees.length === 0 ? (
+                                <>
+                                  <UserPlus className="size-3" /> Assign
+                                </>
+                              ) : (
+                                <>
+                                  <Avatar size="sm" className="size-4">
+                                    <AvatarFallback className="text-[9px]">
+                                      {initials(task.assignees[0].user.name)}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                  {task.assignees.length > 1
+                                    ? `+${task.assignees.length - 1}`
+                                    : null}
+                                </>
+                              )}
+                            </button>
+                          }
+                        />
                       </div>
                     ))}
                   </div>
